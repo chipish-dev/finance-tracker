@@ -1,22 +1,13 @@
+import argparse
 import yfinance as yf
 import numpy as np
 import pandas as pd
+from termcolor import colored, cprint
 from dataclasses import dataclass
 
-RISK_FREE_RATE = 0.02
-
-@dataclass
-class Portfolio:
-    name: str
-    investment: float
-    data: pd.DataFrame
-    returns: pd.DataFrame
-    weighted_daily_returns: pd.Series
-    annualized_return: float
-    volatility: float
-    annual_volatility: float
-    risk_adjusted_return: float
-    final_value: float
+from constants import *
+from models import *
+from analytics import *
 
 def get_tickers_and_weights():
     tickers = []
@@ -47,45 +38,36 @@ def get_tickers_and_weights():
     
     weights = pd.Series(raw_weights)
     return tickers, weights
-    
+
+def get_tickers_and_weights_from_file(filepath):
+    raw_weights = {}
+    tickers = []
+    investment = 0
+
+    with open(filepath, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):  # skip blanks and comments
+                continue
+            parts = line.split()
+            if parts[0] == "investment":
+                investment = int(parts[2])
+                continue
+            if len(parts) != 2:
+                raise ValueError(f"Invalid line format: '{line}' — expected: TICKER WEIGHT")
+            ticker, weight = parts[0].upper(), float(parts[1])
+            tickers.append(ticker)
+            raw_weights[ticker] = weight
+
+    weights = pd.Series(raw_weights)
+    return tickers, weights, investment
+
 def round2(val):
     return round(val, 2)
 
 def to_percent(val):
     return round(val * 100, 2)
 
-def download_price_data(tickers):
-    return yf.download(tickers, auto_adjust=False, period="1y")
-
-def get_adjusted_close(data):
-    return data["Adj Close"].dropna()
-
-def get_daily_returns(prices):
-    return prices.pct_change().dropna() 
-
-def get_weighted_daily_returns(returns, weights):
-    return (returns * weights).sum(axis=1)
-
-def calculate_final_value(investment, weighted_daily_returns):
-    daily_growth_factor = 1 + weighted_daily_returns
-    cumulative_growth_factor = daily_growth_factor.cumprod()
-
-    portfolio_value = investment * cumulative_growth_factor
-    return portfolio_value.iloc[-1]
-
-def get_portfolio_volatility(returns, weights):
-    cov_matrix = returns.cov()
-    return np.sqrt(weights.T @ cov_matrix @ weights)
-
-def annualize_volatility(volatility):
-    return volatility * np.sqrt(252)
-
-def annualize_return(final_value, investment, periods=252):
-    total_return = final_value / investment
-    return total_return ** (252 / periods) - 1
-
-def calculate_sharpe_ratio(annualized_return, annual_volatility):
-    return (annualized_return - RISK_FREE_RATE)/annual_volatility
     
 def create_portfolio_object(name, tickers, weights, investment):
     data = download_price_data(tickers)
@@ -95,25 +77,64 @@ def create_portfolio_object(name, tickers, weights, investment):
     final_value = calculate_final_value(investment, weighted_daily_returns)
     periods = len(returns)
     annualized_return = annualize_return(final_value, investment, periods)
+    return_on_investment = round2(calculate_return_on_investment(final_value, investment))
     volatility = get_portfolio_volatility(returns, weights)
     annual_volatility = annualize_volatility(volatility)
     risk_adjusted_return = calculate_sharpe_ratio(annualized_return, annual_volatility)
-    return Portfolio(name, investment, data, returns, weighted_daily_returns, annualized_return, volatility, annual_volatility, risk_adjusted_return, final_value)
+    return Portfolio(name, tickers, investment, data, returns, weighted_daily_returns, annualized_return, volatility, annual_volatility, risk_adjusted_return, return_on_investment, final_value)
 
 def print_portfolio_summary(portfolio):
-    print(portfolio.name, ":", sep="")
-    print("Final Value: $", round2(portfolio.final_value), sep="")
-    print("Return on Investment (ROI): ", round2((portfolio.final_value - portfolio.investment)/portfolio.investment * 100), "%", sep="")
-    print("Volatility: ", to_percent(portfolio.annual_volatility), "%", sep="")
-    print("Risk Adjusted Return: ", round2(portfolio.risk_adjusted_return), sep="")
+    print(portfolio.name, ":\n", sep="")
+    print("Tickers:", portfolio.tickers)
+    print("Final Value:", f"${round2(portfolio.final_value)}")
+    print("Return on Investment (ROI):", f"{to_percent(portfolio.return_on_investment)}%")
+    print("Volatility:", f"{to_percent(portfolio.annual_volatility)}%")
+    print("Risk Adjusted Return:", f"{round2(portfolio.risk_adjusted_return)}")
     print("\n", "-"*50, "\n", sep="")
 
-def main():
-    investment = int(input("How much to invest?\nAmount: ")) # amount invested in USD
-    tickers = []
+def get_comparison_indicator(result, prefer_negative=False):
+    if result > 0:
+        return colored(result, 'green') if not prefer_negative else colored(result, "red")
+    elif result < 0:
+        return colored(result, 'red') if not prefer_negative else colored(result, "green")
+    else:
+        return colored(result, "dark_grey")
 
-    # Get user input for ticker symbols and weights
-    tickers, weights = get_tickers_and_weights()
+def print_portfolio_differences(portfolio1, portfolio2):
+    print(f"Portfolio Differences: ({portfolio1.name} vs. {portfolio2.name})\n")
+
+    result = round2(portfolio1.final_value - portfolio2.final_value)
+    result_text = get_comparison_indicator(result)
+    print(f"Final Price: ${round2(portfolio1.final_value)} - ${round2(portfolio2.final_value)} = ${result_text}")
+    
+    result = to_percent(portfolio1.return_on_investment - portfolio2.return_on_investment)
+    result_text = get_comparison_indicator(result)
+    print(f"Return on Investment (ROI): {to_percent(portfolio1.return_on_investment)}% - {to_percent(portfolio2.return_on_investment)}% = {result_text}%")
+    
+    result = to_percent(portfolio1.annual_volatility - portfolio2.annual_volatility)
+    result_text = get_comparison_indicator(result, prefer_negative=True)
+    print(f"Volatility: {to_percent(portfolio1.annual_volatility)}% - {to_percent(portfolio2.annual_volatility)}% = {result_text}%")
+    
+    result = round2(portfolio1.risk_adjusted_return - portfolio2.risk_adjusted_return)
+    result_text = get_comparison_indicator(result)
+    print(f"Risk Adjusted Return: {round2(portfolio1.risk_adjusted_return)} - {round2(portfolio2.risk_adjusted_return)} = {result_text}")
+
+def main():
+    parser = argparse.ArgumentParser(description="Portfolio analyzer")
+    parser.add_argument("-f", "--from-file", metavar="FILE", help="Path to file with tickers and weights")
+    args = parser.parse_args()
+    
+    tickers = []
+    investment = 0
+    
+    # Get user input for ticker symbols and weights, or from file if specified
+    if args.from_file:
+        tickers, weights, investment = get_tickers_and_weights_from_file(args.from_file)
+    else:
+        tickers, weights = get_tickers_and_weights()
+    
+    if investment == 0:
+        investment = int(input("\nHow much to invest?\nAmount: ")) # amount invested in USD
 
     if tickers == []:
         print("No tickers listed.")
@@ -136,7 +157,7 @@ def main():
 
     print_portfolio_summary(sp500_portfolio)
 
-    print("\nDifference: $", round2(portfolio.final_value - sp500_portfolio.final_value), sep="")
+    print_portfolio_differences(portfolio, sp500_portfolio)
 
 if __name__ == "__main__":
     main()

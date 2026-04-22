@@ -1,0 +1,8 @@
+# Usage: [TICKER] [weight]
+
+investment = 10000
+
+MSFT 0.25
+GOOG 0.25
+AAPL 0.25
+NVDA 0.25
